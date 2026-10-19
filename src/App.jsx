@@ -9,50 +9,50 @@ import {
   Trash2, 
   BookOpen, 
   Layers, 
-  CheckCircle2, 
-  ExternalLink,
+  Key, 
+  Plus, 
+  MessageSquare, 
+  AlertCircle,
+  X,
+  CheckCircle2,
   ChevronRight
 } from 'lucide-react';
 import './App.css';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
 
 export default function App() {
   const [backendOnline, setBackendOnline] = useState(false);
-  const [documents, setDocuments] = useState([
-    {
-      doc_id: 'sample-doc-1',
-      filename: 'Sample_Research_Document.pdf',
-      total_pages: 14,
-      file_size_formatted: '2.4 MB'
-    }
-  ]);
-  const [activeDocId, setActiveDocId] = useState('sample-doc-1');
-  const [messages, setMessages] = useState([
-    {
-      id: 'welcome-1',
-      sender: 'ai',
-      text: 'Hello! I am your AI PDF Assistant. Upload any document on the left or select an existing one to ask questions, extract key insights, and query page references in real-time.',
-      sources: []
-    }
-  ]);
+  const [geminiApiKey, setGeminiApiKey] = useState(() => localStorage.getItem('GEMINI_API_KEY') || '');
+  const [isKeyModalOpen, setIsKeyModalOpen] = useState(false);
+  const [tempKeyInput, setTempKeyInput] = useState('');
+
+  // Documents State
+  const [documents, setDocuments] = useState([]);
+  const [activeDocId, setActiveDocId] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+
+  // Chat Sessions State
+  const [sessions, setSessions] = useState([]);
+  const [activeSessionId, setActiveSessionId] = useState(null);
+
+  // Messages State
+  const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
 
-  // Ping backend health
+  // 1. Health check & Initial Data load
   useEffect(() => {
     const checkHealth = async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/health`, { method: 'GET' });
-        if (res.ok) {
-          setBackendOnline(true);
-        } else {
-          setBackendOnline(false);
-        }
-      } catch (err) {
+        const res = await fetch(`${API_BASE_URL}/v1/health`, { method: 'GET' });
+        setBackendOnline(res.ok);
+      } catch {
         setBackendOnline(false);
       }
     };
@@ -61,67 +61,194 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Auto scroll to latest message
+  // 2. Fetch Documents and Sessions when backend is online
+  const fetchDocuments = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/documents`);
+      if (res.ok) {
+        const data = await res.json();
+        setDocuments(data.documents || []);
+        if (data.documents && data.documents.length > 0 && !activeDocId) {
+          setActiveDocId(data.documents[0].id);
+        }
+      }
+    } catch (err) {
+      console.warn('Could not fetch documents:', err);
+    }
+  };
+
+  const fetchSessions = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/chats`);
+      if (res.ok) {
+        const data = await res.json();
+        setSessions(data.sessions || []);
+        if (data.sessions && data.sessions.length > 0) {
+          selectSession(data.sessions[0].id);
+        } else {
+          createNewSession("Default Chat");
+        }
+      }
+    } catch (err) {
+      console.warn('Could not fetch sessions:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (backendOnline) {
+      fetchDocuments();
+      fetchSessions();
+    }
+  }, [backendOnline]);
+
+  // Select a session and load its messages
+  const selectSession = async (sessionId) => {
+    setActiveSessionId(sessionId);
+    try {
+      const res = await fetch(`${API_BASE_URL}/chats/${sessionId}/messages`);
+      if (res.ok) {
+        const data = await res.json();
+        const loadedMessages = (data.messages || []).map(m => ({
+          id: m.id,
+          sender: m.role === 'user' ? 'user' : 'ai',
+          text: m.content,
+          sources: m.sources || []
+        }));
+        setMessages(loadedMessages);
+      }
+    } catch (err) {
+      console.error('Error fetching session messages:', err);
+    }
+  };
+
+  // Create a new chat session
+  const createNewSession = async (title = "New Chat") => {
+    if (!backendOnline) {
+      const fakeId = `local-${Date.now()}`;
+      setSessions(prev => [{ id: fakeId, title, created_at: new Date().toISOString() }, ...prev]);
+      setActiveSessionId(fakeId);
+      setMessages([]);
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/chats`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSessions(prev => [data.session, ...prev]);
+        setActiveSessionId(data.session.id);
+        setMessages([]);
+      }
+    } catch (err) {
+      console.error('Error creating chat session:', err);
+    }
+  };
+
+  // Delete a session
+  const handleDeleteSession = async (e, sessionId) => {
+    e.stopPropagation();
+    try {
+      await fetch(`${API_BASE_URL}/chats/${sessionId}`, { method: 'DELETE' });
+      setSessions(prev => prev.filter(s => s.id !== sessionId));
+      if (activeSessionId === sessionId) {
+        setMessages([]);
+        setActiveSessionId(null);
+      }
+    } catch (err) {
+      console.error('Error deleting session:', err);
+    }
+  };
+
+  // Auto scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
 
-  const activeDoc = documents.find(d => d.doc_id === activeDocId);
+  const activeDoc = documents.find(d => d.id === activeDocId);
 
-  // Handle PDF file upload
+  // File Upload Handler
   const handleFileUpload = async (file) => {
     if (!file || !file.name.toLowerCase().endsWith('.pdf')) {
-      alert('Please select a valid PDF file.');
+      setUploadError('Only PDF documents are supported.');
       return;
     }
+    setUploadError('');
+    setIsUploading(true);
 
-    const tempDocId = `doc-${Date.now()}`;
-    const newDocObj = {
-      doc_id: tempDocId,
-      filename: file.name,
-      total_pages: 1,
-      file_size_formatted: `${(file.size / (1024 * 1024)).toFixed(1)} MB`
-    };
+    const formData = new FormData();
+    formData.append('file', file);
 
-    // Attempt real backend upload if online
-    if (backendOnline) {
-      const formData = new FormData();
-      formData.append('file', file);
-      try {
-        const res = await fetch(`${API_BASE_URL}/pdf/upload`, {
-          method: 'POST',
-          body: formData
-        });
-        if (res.ok) {
-          const json = await res.json();
-          newDocObj.doc_id = json.data.doc_id;
-          newDocObj.total_pages = json.data.total_pages;
-        }
-      } catch (e) {
-        console.warn('Backend upload error, fallback to local state:', e);
-      }
+    const headers = {};
+    if (geminiApiKey) {
+      headers['X-Gemini-Api-Key'] = geminiApiKey;
     }
 
-    setDocuments(prev => [newDocObj, ...prev]);
-    setActiveDocId(newDocObj.doc_id);
+    try {
+      const res = await fetch(`${API_BASE_URL}/documents`, {
+        method: 'POST',
+        headers,
+        body: formData
+      });
 
-    setMessages(prev => [
-      ...prev,
-      {
-        id: `sys-${Date.now()}`,
-        sender: 'ai',
-        text: `📄 Uploaded and parsed "${file.name}". You can now ask questions about this document!`,
-        sources: []
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.detail || 'Upload failed');
       }
-    ]);
+
+      const result = await res.json();
+      await fetchDocuments();
+      if (result.data && result.data.id) {
+        setActiveDocId(result.data.id);
+      }
+
+      setMessages(prev => [
+        ...prev,
+        {
+          id: `sys-${Date.now()}`,
+          sender: 'ai',
+          text: `📄 Ingested and indexed "${file.name}" (${result.data.total_pages} pages). You can now ask questions about it!`,
+          sources: []
+        }
+      ]);
+    } catch (err) {
+      setUploadError(err.message);
+    } finally {
+      setIsUploading(false);
+    }
   };
 
+  // Delete Document
+  const handleDeleteDocument = async (e, docId) => {
+    e.stopPropagation();
+    if (!confirm('Are you sure you want to delete this document and its vector embeddings?')) return;
+    try {
+      await fetch(`${API_BASE_URL}/documents/${docId}`, { method: 'DELETE' });
+      setDocuments(prev => prev.filter(d => d.id !== docId));
+      if (activeDocId === docId) {
+        setActiveDocId(null);
+      }
+    } catch (err) {
+      console.error('Error deleting document:', err);
+    }
+  };
+
+  // Send Question with Streaming or Fallback
   const handleSend = async (questionText = inputValue) => {
     const query = questionText.trim();
     if (!query || isLoading) return;
 
+    let targetSessionId = activeSessionId;
+    if (!targetSessionId) {
+      await createNewSession("Document Inquiry");
+      targetSessionId = activeSessionId;
+    }
+
     const userMsg = {
-      id: `msg-${Date.now()}`,
+      id: `usr-${Date.now()}`,
       sender: 'user',
       text: query
     };
@@ -130,24 +257,29 @@ export default function App() {
     setInputValue('');
     setIsLoading(true);
 
-    if (backendOnline) {
+    if (backendOnline && targetSessionId) {
+      const headers = { 'Content-Type': 'application/json' };
+      if (geminiApiKey) {
+        headers['X-Gemini-Api-Key'] = geminiApiKey;
+      }
+
       try {
-        const res = await fetch(`${API_BASE_URL}/chat/query`, {
+        const response = await fetch(`${API_BASE_URL}/chats/${targetSessionId}/messages`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify({
-            doc_id: activeDocId,
             question: query,
-            chat_history: messages.map(m => ({ role: m.sender, content: m.text }))
+            document_id: activeDocId,
+            stream: false
           })
         });
 
-        if (res.ok) {
-          const data = await res.json();
+        if (response.ok) {
+          const data = await response.json();
           setMessages(prev => [
             ...prev,
             {
-              id: `ai-${Date.now()}`,
+              id: data.message_id || `ai-${Date.now()}`,
               sender: 'ai',
               text: data.answer,
               sources: data.sources || []
@@ -157,44 +289,36 @@ export default function App() {
           return;
         }
       } catch (err) {
-        console.error('Error querying backend:', err);
+        console.error('Failed to query backend chat:', err);
       }
     }
 
-    // High quality simulated preview response
+    // Offline / Standby Simulated Fallback
     setTimeout(() => {
-      let simulatedReply = '';
-      let simulatedSources = [];
-
-      if (query.toLowerCase().includes('summary') || query.toLowerCase().includes('summarize')) {
-        simulatedReply = `Here is an executive summary of **${activeDoc ? activeDoc.filename : 'the document'}**:\n\n• **Core Purpose**: Outlines foundational architecture and operational objectives for real-time document intelligence.\n• **Key Findings**: Demonstrates high accuracy retrieval-augmented generation (RAG) with low latency token streaming.\n• **Recommendations**: Implements modular vector chunking and proactive source attribution for each synthesized answer.`;
-        simulatedSources = [{ page_number: 1, excerpt: "Introduction and Executive Abstract overview..." }, { page_number: 4, excerpt: "Performance metrics and benchmark comparisons..." }];
-      } else if (query.toLowerCase().includes('takeaway') || query.toLowerCase().includes('finding')) {
-        simulatedReply = `The three primary takeaways from this document are:\n\n1. **Semantic Precision**: Contextual chunks yield up to 40% higher relevance compared to naive sliding-window text splits.\n2. **Citation Traceability**: Linking specific page numbers significantly enhances user trust.\n3. **Scalability**: Python FastAPI backend guarantees asynchronous non-blocking throughput.`;
-        simulatedSources = [{ page_number: 2, excerpt: "Methodology and benchmark analysis..." }];
-      } else {
-        simulatedReply = `Based on **${activeDoc ? activeDoc.filename : 'your document'}**, the text discusses: "${query}".\n\nThe Python FastAPI backend is structured and ready. Once you provide the project requirements specification document, we will connect the vector search and your chosen LLM engine.`;
-        simulatedSources = [{ page_number: 1, excerpt: "Relevant section match found in indexed context." }];
-      }
-
       setMessages(prev => [
         ...prev,
         {
           id: `ai-${Date.now()}`,
           sender: 'ai',
-          text: simulatedReply,
-          sources: simulatedSources
+          text: `Backend is in standby or offline. Once the Python FastAPI server is running with 'uvicorn app.main:app --reload --port 8000', questions will be retrieved from ChromaDB and answered by Google Gemini with real page citations!`,
+          sources: activeDoc ? [{ filename: activeDoc.filename, page_number: 1, excerpt: "Sample indexed document passage." }] : []
         }
       ]);
       setIsLoading(false);
-    }, 800);
+    }, 600);
+  };
+
+  const saveApiKey = () => {
+    localStorage.setItem('GEMINI_API_KEY', tempKeyInput.trim());
+    setGeminiApiKey(tempKeyInput.trim());
+    setIsKeyModalOpen(false);
   };
 
   const samplePrompts = [
     { title: 'Executive Summary', prompt: 'Summarize this document in 3 concise bullet points.' },
-    { title: 'Key Findings', prompt: 'What are the main findings and takeaways discussed?' },
-    { title: 'Methodology & Setup', prompt: 'Explain the core methodology or architecture used.' },
-    { title: 'Actionable Steps', prompt: 'What are the primary action items or recommendations?' }
+    { title: 'Key Findings & Decisions', prompt: 'What are the main findings, takeaways, or conclusions?' },
+    { title: 'Methodology / Rules', prompt: 'Explain the core methodology, requirements, or architecture.' },
+    { title: 'Action Items', prompt: 'List any actionable next steps or recommendations mentioned.' }
   ];
 
   return (
@@ -202,134 +326,195 @@ export default function App() {
       <div className="app-layout">
         {/* Left Sidebar */}
         <aside className="sidebar">
+          {/* Brand */}
           <div className="brand">
             <div className="brand-icon">
               <Bot size={22} />
             </div>
             <div>
               <div className="brand-title">
-                DocuMind <span className="brand-badge">API v1.0</span>
+                DocuMind <span className="brand-badge">RAG AI</span>
               </div>
             </div>
           </div>
 
-          {/* Backend Status indicator */}
+          {/* Backend Status */}
           <div className="status-pill">
             <span style={{ display: 'flex', alignItems: 'center' }}>
               <span className={`status-dot ${backendOnline ? 'online' : 'offline'}`} />
-              FastAPI Backend
+              FastAPI + ChromaDB
             </span>
             <span style={{ fontSize: '0.75rem', fontWeight: 600, color: backendOnline ? 'var(--accent-emerald)' : '#f43f5e' }}>
-              {backendOnline ? 'CONNECTED' : 'STANDBY'}
+              {backendOnline ? 'ONLINE' : 'STANDBY'}
             </span>
           </div>
 
           {/* PDF Upload Dropzone */}
-          <div 
-            className={`upload-card ${isDragOver ? 'drag-active' : ''}`}
-            onClick={() => fileInputRef.current?.click()}
-            onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
-            onDragLeave={() => setIsDragOver(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setIsDragOver(false);
-              if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-                handleFileUpload(e.dataTransfer.files[0]);
-              }
-            }}
-          >
-            <input 
-              type="file" 
-              ref={fileInputRef} 
-              style={{ display: 'none' }} 
-              accept=".pdf"
-              onChange={(e) => {
-                if (e.target.files && e.target.files[0]) {
-                  handleFileUpload(e.target.files[0]);
+          <div>
+            <div 
+              className={`upload-card ${isDragOver ? 'drag-active' : ''}`}
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+              onDragLeave={() => setIsDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setIsDragOver(false);
+                if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                  handleFileUpload(e.dataTransfer.files[0]);
                 }
               }}
-            />
-            <div className="upload-icon">
-              <UploadCloud size={24} />
-            </div>
-            <div className="upload-title">Drop PDF here</div>
-            <div className="upload-subtitle">or click to browse files (max 25MB)</div>
-          </div>
-
-          {/* Documents List */}
-          <div className="documents-section">
-            <div className="section-label">Uploaded Documents ({documents.length})</div>
-            {documents.map((doc) => (
-              <div 
-                key={doc.doc_id} 
-                className={`doc-item ${doc.doc_id === activeDocId ? 'active' : ''}`}
-                onClick={() => setActiveDocId(doc.doc_id)}
-              >
-                <div className="doc-info">
-                  <FileText size={18} color={doc.doc_id === activeDocId ? 'var(--primary)' : 'var(--text-muted)'} />
-                  <div>
-                    <div className="doc-name">{doc.filename}</div>
-                    <div className="doc-meta">{doc.total_pages} pages • {doc.file_size_formatted || 'PDF'}</div>
-                  </div>
-                </div>
-                {doc.doc_id === activeDocId && <ChevronRight size={16} color="var(--primary)" />}
+            >
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                style={{ display: 'none' }} 
+                accept=".pdf"
+                onChange={(e) => {
+                  if (e.target.files && e.target.files[0]) {
+                    handleFileUpload(e.target.files[0]);
+                  }
+                }}
+              />
+              <div className="upload-icon">
+                <UploadCloud size={20} />
               </div>
-            ))}
+              <div className="upload-title">
+                {isUploading ? "Extracting & Embedding..." : "Upload PDF"}
+              </div>
+              <div className="upload-subtitle">Drag & drop or browse (max 15MB)</div>
+            </div>
+            {uploadError && (
+              <div style={{ color: '#f43f5e', fontSize: '0.75rem', marginTop: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <AlertCircle size={14} /> {uploadError}
+              </div>
+            )}
           </div>
 
-          {/* Bottom Quick Info */}
-          <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 12, fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-              <span>Python FastAPI:</span>
-              <span style={{ color: 'var(--text-primary)' }}>:8000</span>
+          {/* Documents Section */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div className="section-header">
+              <span className="section-label">Documents ({documents.length})</span>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>React Vite UI:</span>
-              <span style={{ color: 'var(--text-primary)' }}>:5173</span>
+            <div className="items-list">
+              {documents.length === 0 ? (
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '6px 8px' }}>
+                  No documents uploaded yet.
+                </div>
+              ) : (
+                documents.map((doc) => (
+                  <div 
+                    key={doc.id} 
+                    className={`list-item ${doc.id === activeDocId ? 'active' : ''}`}
+                    onClick={() => setActiveDocId(doc.id)}
+                  >
+                    <div className="item-left">
+                      <FileText size={16} color={doc.id === activeDocId ? 'var(--primary)' : 'var(--text-muted)'} />
+                      <div>
+                        <div className="item-name">{doc.filename}</div>
+                        <div className="item-sub">{doc.total_pages} pages</div>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span className={doc.status === 'ready' ? 'badge-ready' : 'badge-processing'}>
+                        {doc.status}
+                      </span>
+                      <button 
+                        className="btn-icon-danger"
+                        title="Delete document"
+                        onClick={(e) => handleDeleteDocument(e, doc.id)}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
+          </div>
+
+          {/* Chat Sessions History Section */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
+            <div className="section-header">
+              <span className="section-label">Chat Sessions</span>
+              <button 
+                className="btn-action" 
+                style={{ padding: '3px 8px', fontSize: '0.72rem' }}
+                onClick={() => createNewSession(`Chat ${sessions.length + 1}`)}
+              >
+                <Plus size={12} /> New
+              </button>
+            </div>
+            <div className="items-list" style={{ flex: 1, maxHeight: '220px' }}>
+              {sessions.map((s) => (
+                <div 
+                  key={s.id} 
+                  className={`list-item ${s.id === activeSessionId ? 'active' : ''}`}
+                  onClick={() => selectSession(s.id)}
+                >
+                  <div className="item-left">
+                    <MessageSquare size={14} color={s.id === activeSessionId ? 'var(--primary)' : 'var(--text-muted)'} />
+                    <div className="item-name">{s.title}</div>
+                  </div>
+                  <button 
+                    className="btn-icon-danger"
+                    title="Delete session"
+                    onClick={(e) => handleDeleteSession(e, s.id)}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Gemini API Key Config Button */}
+          <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 12 }}>
+            <button 
+              className="btn-action" 
+              style={{ width: '100%', justifyContent: 'center' }}
+              onClick={() => {
+                setTempKeyInput(geminiApiKey);
+                setIsKeyModalOpen(true);
+              }}
+            >
+              <Key size={14} /> {geminiApiKey ? "Gemini Key Configured" : "Set Gemini API Key"}
+            </button>
           </div>
         </aside>
 
-        {/* Main Chat Interface */}
+        {/* Main Workspace */}
         <main className="main-chat">
-          {/* Top Header */}
+          {/* Header */}
           <header className="chat-header">
             <div className="active-doc-badge">
               <BookOpen size={18} color="var(--primary)" />
-              <span>{activeDoc ? activeDoc.filename : 'Select or upload a document'}</span>
+              <span>{activeDoc ? activeDoc.filename : 'All Indexed Documents'}</span>
               {activeDoc && (
-                <span className="brand-badge" style={{ marginLeft: 8 }}>
+                <span className="brand-badge">
                   {activeDoc.total_pages} Pages Indexed
                 </span>
               )}
             </div>
             <div className="header-actions">
               <button 
-                className="btn-secondary"
-                onClick={() => setMessages([
-                  {
-                    id: `cleared-${Date.now()}`,
-                    sender: 'ai',
-                    text: 'Chat history cleared. What would you like to know about this document?',
-                    sources: []
-                  }
-                ])}
+                className="btn-action"
+                onClick={() => setMessages([])}
               >
-                <Trash2 size={14} /> Clear Chat
+                <Trash2 size={14} /> Clear Messages
               </button>
             </div>
           </header>
 
-          {/* Messages Viewport */}
+          {/* Messages */}
           <div className="chat-messages">
-            {messages.length === 1 && (
+            {messages.length === 0 ? (
               <div className="welcome-container animate-fade-in">
                 <div className="welcome-hero-badge">
-                  <Sparkles size={14} /> Intelligent PDF Dialogue
+                  <Sparkles size={14} /> Grounded Document Intelligence
                 </div>
                 <h1 className="welcome-title">Ask anything about your document</h1>
                 <p className="welcome-desc">
-                  Extract answers, generate summaries, and navigate page citations effortlessly with our dual Python API and React frontend setup.
+                  Every answer is strictly retrieved from your PDF chunks, powered by Gemini and ChromaDB vector search with traceable page citations.
                 </p>
                 <div className="prompt-suggestions">
                   {samplePrompts.map((p, idx) => (
@@ -344,39 +529,43 @@ export default function App() {
                   ))}
                 </div>
               </div>
-            )}
-
-            {messages.map((m) => (
-              <div key={m.id} className={`message-row ${m.sender} animate-fade-in`}>
-                {m.sender === 'ai' && (
-                  <div className="avatar ai">
-                    <Bot size={18} />
-                  </div>
-                )}
-                <div>
-                  <div className="bubble">
-                    <div style={{ whiteSpace: 'pre-wrap' }}>{m.text}</div>
-                    {m.sources && m.sources.length > 0 && (
-                      <div className="citations-container">
-                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                          <Layers size={13} /> Sources:
-                        </span>
-                        {m.sources.map((s, idx) => (
-                          <span key={idx} className="citation-chip">
-                            Page {s.page_number}
+            ) : (
+              messages.map((m) => (
+                <div key={m.id} className={`message-row ${m.sender} animate-fade-in`}>
+                  {m.sender === 'ai' && (
+                    <div className="avatar ai">
+                      <Bot size={18} />
+                    </div>
+                  )}
+                  <div>
+                    <div className="bubble">
+                      <div style={{ whiteSpace: 'pre-wrap' }}>{m.text}</div>
+                      {m.sources && m.sources.length > 0 && (
+                        <div className="citations-container">
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <Layers size={12} /> Citations:
                           </span>
-                        ))}
-                      </div>
-                    )}
+                          {m.sources.map((s, idx) => (
+                            <span 
+                              key={idx} 
+                              className="citation-chip"
+                              title={s.excerpt || `Page ${s.page_number}`}
+                            >
+                              {s.filename ? `${s.filename} • ` : ''}Page {s.page_number}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
+                  {m.sender === 'user' && (
+                    <div className="avatar user">
+                      <User size={18} />
+                    </div>
+                  )}
                 </div>
-                {m.sender === 'user' && (
-                  <div className="avatar user">
-                    <User size={18} />
-                  </div>
-                )}
-              </div>
-            ))}
+              ))
+            )}
 
             {isLoading && (
               <div className="message-row ai animate-fade-in">
@@ -395,13 +584,13 @@ export default function App() {
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Bottom Chat Input Bar */}
+          {/* Input Bar */}
           <div className="chat-input-wrapper">
             <div className="input-container">
               <input
                 type="text"
                 className="chat-input"
-                placeholder={activeDoc ? `Ask about "${activeDoc.filename}"...` : "Upload a PDF document to begin..."}
+                placeholder={activeDoc ? `Ask a question about "${activeDoc.filename}"...` : "Upload a PDF or ask a question..."}
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={(e) => {
@@ -422,6 +611,41 @@ export default function App() {
           </div>
         </main>
       </div>
+
+      {/* Gemini API Key Modal */}
+      {isKeyModalOpen && (
+        <div className="modal-overlay" onClick={() => setIsKeyModalOpen(false)}>
+          <div className="modal-card animate-fade-in" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">Google Gemini API Key</div>
+              <button 
+                onClick={() => setIsKeyModalOpen(false)}
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              Enter your Google Gemini API key to enable live embedding creation and synthesized RAG answers. You can get a free key from Google AI Studio (<a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" style={{ color: 'var(--primary)' }}>aistudio.google.com</a>).
+            </p>
+            <input 
+              type="password"
+              className="modal-input"
+              placeholder="AIzaSy..."
+              value={tempKeyInput}
+              onChange={(e) => setTempKeyInput(e.target.value)}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button className="btn-action" onClick={() => setIsKeyModalOpen(false)}>
+                Cancel
+              </button>
+              <button className="btn-action primary" onClick={saveApiKey}>
+                Save Key
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
